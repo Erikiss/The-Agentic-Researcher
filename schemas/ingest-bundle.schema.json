@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentic-researcher:schema:ingest-bundle:v1",
+  "title": "Agentic Researcher ingest bundle",
+  "type": "object",
+  "required": ["schema_version", "bundle_id", "items"],
+  "properties": {
+    "schema_version": {"const": "agentic-researcher/ingest-bundle/v1"},
+    "bundle_id": {"type": "string", "minLength": 1},
+    "bundle_fingerprint": {"type": "string"},
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {"id": {"type": "string", "minLength": 1}},
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

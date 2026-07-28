@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentic-researcher:schema:curated-topics:v1",
+  "title": "Deterministically merged curation topics",
+  "type": "object",
+  "required": ["schema_version", "bundle_id", "input_hash", "consensus", "topics"],
+  "properties": {
+    "schema_version": {"const": "agentic-researcher/curated-topics/v1"},
+    "bundle_id": {"type": "string", "minLength": 1},
+    "input_hash": {"type": "string"},
+    "consensus": {"type": "object"},
+    "topics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["topic_id", "status", "support_count", "providers", "topic"],
+        "properties": {
+          "topic_id": {"type": "string"},
+          "status": {"enum": ["accepted", "needs_review"]},
+          "support_count": {"type": "integer", "minimum": 1},
+          "providers": {"type": "array", "items": {"type": "string"}},
+          "topic": {"type": "object"},
+          "alternatives": {"type": "object"},
+          "critical_disagreements": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -13,6 +13,24 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 USER=${USER:-$(whoami)}
 
+# Machine-readable pipeline commands intentionally bypass the interactive
+# container launcher. They orchestrate provider CLIs and local/open-weight batch
+# jobs while preserving the launcher's historical option parsing.
+case "${1:-}" in
+    init-project|--init-project|curate|expand|run-batch|provider-contract)
+        if command -v python3 >/dev/null 2>&1; then
+            export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+            exec python3 -m agentic_researcher "$@"
+        elif command -v python >/dev/null 2>&1; then
+            export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+            exec python -m agentic_researcher "$@"
+        else
+            echo "Error: Python 3 is required for machine-readable pipeline commands."
+            exit 1
+        fi
+        ;;
+esac
+
 capture_env_overrides() {
     local var override_var unset_marker="__AR_UNSET__"
     local override_vars=(
@@ -287,6 +305,10 @@ agentic-researcher: Launch an AI coding agent in a sandboxed container
 
 Usage:
   agentic-researcher [OPTIONS] [DIRECTORY] [TOOL_OPTIONS...]
+  agentic-researcher init-project SPEC DESTINATION
+  agentic-researcher curate BUNDLE --response PROVIDER=FILE... --output FILE
+  agentic-researcher expand CURATED --output QUEUE
+  agentic-researcher run-batch QUEUE --work-root DIR --state FILE
 
 Options:
   --setup             Run the optional interactive setup wizard
@@ -326,6 +348,7 @@ Examples:
   agentic-researcher --yolo --model opus          # YOLO + Opus
   agentic-researcher --multi-node                 # Multi-node dispatch (Slurm)
   agentic-researcher --multi-node --test          # Validate multi-node setup
+  agentic-researcher provider-contract             # Print provider adapter I/O
 
 What's Sandboxed:
   The agent can ONLY access your project directory.

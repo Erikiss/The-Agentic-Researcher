@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentic-researcher:schema:run-result:v1",
+  "title": "Normalized provider run result",
+  "type": "object",
+  "required": ["schema_version", "task_id", "provider", "status", "attempt"],
+  "properties": {
+    "schema_version": {"const": "agentic-researcher/run-result/v1"},
+    "task_id": {"type": "string", "minLength": 1},
+    "provider": {"enum": ["claude", "codex", "antigravity", "opencode"]},
+    "status": {
+      "enum": ["success", "partial", "failed", "timeout", "needs_review", "skipped"]
+    },
+    "attempt": {"type": "integer", "minimum": 1},
+    "started_at": {"type": ["string", "null"]},
+    "finished_at": {"type": ["string", "null"]},
+    "exit_code": {"type": ["integer", "null"]},
+    "duration_seconds": {"type": "number", "minimum": 0},
+    "summary": {"type": "string"},
+    "artifacts": {"type": "array"},
+    "verification": {"type": "object"},
+    "error": {"type": ["string", "null"]}
+  },
+  "additionalProperties": true
+}

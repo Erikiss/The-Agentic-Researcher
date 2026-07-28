@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentic-researcher:schema:research-spec:v1",
+  "title": "Immutable Agentic Researcher task contract",
+  "type": "object",
+  "required": ["schema_version", "task_id", "title", "problem", "task_type"],
+  "properties": {
+    "schema_version": {"const": "agentic-researcher/research-spec/v1"},
+    "task_id": {"type": "string", "minLength": 1},
+    "title": {"type": "string", "minLength": 1},
+    "problem": {"type": "string", "minLength": 1},
+    "task_type": {"type": "string", "minLength": 1},
+    "synthetic": {"type": "boolean"},
+    "source": {"type": "object"},
+    "context": {"type": "object"},
+    "prerequisites": {"type": "array"},
+    "constraints": {"type": "array"},
+    "expected_outputs": {"type": "array"},
+    "verification": {"type": "array"},
+    "evidence_policy": {"type": "object"},
+    "budget": {"type": "object"}
+  },
+  "additionalProperties": true
+}

@@ -124,6 +124,25 @@ Off by default. Requires Apptainer runtime and an active multi-node Slurm alloca
 
 When you relaunch the sandbox on a project that already has filled-in instructions, running `/setup_research_plan` will automatically detect the existing state, read `report.tex` and `TODO.md`, and summarize where the project left off before continuing.
 
+### Discord Mathematics Pipeline
+
+The machine-readable pipeline can turn a Discord mathematics ingest bundle into a low-cost research queue. The Agentic Researcher remains the top-level orchestrator: Claude Code, OpenAI Codex, and Google Antigravity independently curate the source material, a 2-of-3 merge accepts only their shared interpretation, and OpenCode can then run the expanded queue against a local open-weight model.
+
+All three curator responses are required by default; a degraded two-system
+fallback must be requested explicitly and reviewed manually.
+
+```bash
+./agentic-researcher curate discord_exports/ingest_bundle.json \
+  --provider claude --provider codex --provider antigravity \
+  --media-root discord_exports/curation_media \
+  --threshold 2 --output curated_topics.json
+./agentic-researcher expand curated_topics.json --output research_queue.json
+./agentic-researcher run-batch research_queue.json \
+  --work-root research-runs --state batch_state.json --provider opencode
+```
+
+See the [Discord mathematics pipeline guide](docs/discord_math_pipeline.md) for the data contract, privacy boundary, evidence policy, provider overrides, resumability, and the [Google Colab open-weight runner](notebooks/open_weight_bulk_research.ipynb).
+
 ## Architecture
 
 ### Sandbox
