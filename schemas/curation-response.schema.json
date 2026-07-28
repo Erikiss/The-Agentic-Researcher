@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentic-researcher:schema:curation-response:v1",
+  "title": "Independent mathematical curation response",
+  "type": "object",
+  "required": ["schema_version", "provider", "bundle_id", "topics"],
+  "properties": {
+    "schema_version": {"const": "agentic-researcher/curation-response/v1"},
+    "provider": {"enum": ["claude", "codex", "antigravity", "opencode"]},
+    "bundle_id": {"type": "string", "minLength": 1},
+    "topics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "source_item_ids"],
+        "properties": {
+          "title": {"type": "string", "minLength": 1},
+          "summary": {"type": "string"},
+          "source_item_ids": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1}
+          },
+          "area": {"type": "string"},
+          "subarea": {"type": "string"},
+          "formulas": {"type": "array", "items": {"type": "string"}},
+          "questions": {"type": "array", "items": {"type": "string"}},
+          "prerequisites": {"type": "array", "items": {"type": "string"}},
+          "uncertainties": {"type": "array", "items": {"type": "string"}},
+          "proposed_tasks": {"type": "array", "items": {"type": "object"}},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

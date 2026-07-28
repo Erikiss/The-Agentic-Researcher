@@ -25,6 +25,15 @@ Thumbs.db
 __pycache__/
 *.pyc
 
+# Generated Discord research pipeline data (may contain private source material)
+discord_exports/
+private-runs/
+research-runs/
+*.runs/
+curated_topics.json
+research_queue.json
+batch_state.json
+
 
 # Generated config (from template)
 config/opencode_config.json

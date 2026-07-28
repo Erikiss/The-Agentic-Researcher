@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentic-researcher:schema:batch-state:v1",
+  "title": "Resumable Agentic Researcher batch state",
+  "type": "object",
+  "required": ["schema_version", "queue_id", "provider", "tasks"],
+  "properties": {
+    "schema_version": {"const": "agentic-researcher/batch-state/v1"},
+    "queue_id": {"type": "string", "minLength": 1},
+    "provider": {"enum": ["claude", "codex", "antigravity", "opencode"]},
+    "created_at": {"type": "string"},
+    "updated_at": {"type": "string"},
+    "summary": {"type": "object"},
+    "tasks": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["task_id", "input_hash", "status", "attempts", "project"],
+        "properties": {
+          "task_id": {"type": "string"},
+          "input_hash": {"type": "string"},
+          "status": {
+            "enum": ["running", "success", "partial", "failed", "timeout", "needs_review", "skipped"]
+          },
+          "attempts": {"type": "integer", "minimum": 1},
+          "project": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}
