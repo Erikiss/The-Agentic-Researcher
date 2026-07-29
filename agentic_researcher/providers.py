@@ -258,9 +258,13 @@ def _expand_command(
     workspace: Path,
     output_path: Path | None,
 ) -> tuple[list[str], bool, bool]:
+    try:
+        prompt_file_value = str(prompt_path.relative_to(workspace))
+    except ValueError:
+        prompt_file_value = str(prompt_path)
     replacements = {
         "prompt": prompt,
-        "prompt_file": str(prompt_path),
+        "prompt_file": prompt_file_value,
         "workspace": str(workspace),
         "output_file": str(output_path) if output_path else "",
     }
@@ -289,7 +293,7 @@ def extract_json_document(text: str) -> Any:
         parsed = None
 
     if isinstance(parsed, dict):
-        for key in ("result", "content", "output", "message"):
+        for key in ("result", "content", "output", "message", "response"):
             value = parsed.get(key)
             if isinstance(value, str):
                 try:
@@ -310,7 +314,7 @@ def extract_json_document(text: str) -> Any:
             continue
     for event in reversed(jsonl):
         if isinstance(event, dict):
-            for key in ("result", "content", "output", "message"):
+            for key in ("result", "content", "output", "message", "response"):
                 value = event.get(key)
                 if isinstance(value, (dict, list)):
                     return value

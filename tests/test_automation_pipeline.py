@@ -562,6 +562,9 @@ def test_provider_adapter_supports_prompt_argument_and_wrapper_json(tmp_path: Pa
     assert run.status == "success"
     assert run.parsed["summary"] == "prompt-through-argument"
     assert extract_json_document('```json\n{"ok": true}\n```') == {"ok": True}
+    assert extract_json_document(
+        '{"status":"SUCCESS","response":"{\\"ok\\":true}"}'
+    ) == {"ok": True}
 
 
 def test_provider_adapter_uses_utf8_for_mathematical_prompts(tmp_path: Path) -> None:
