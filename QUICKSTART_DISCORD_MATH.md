@@ -185,6 +185,12 @@ lokalen State gespeichert. Ein unveränderter Folgelauf erhält den Status
 `no_work` und ruft keinen Commercial Provider auf. Inhaltlich geänderte Blöcke
 werden dagegen erneut ausgewählt.
 
+Wenn zwei Kuratoren einen Block abdecken, aber etwa Gruppierung, Fachgebiet oder
+Formel-Normalisierung nicht ausreichend übereinstimmen, bleibt der Status
+`needs_review` sichtbar. Solche Themen werden nicht still verworfen: Die
+Research-Queue übernimmt den Status, die konkreten Dissensfelder und eine
+verbindliche Anweisung, diese vor jeder Tatsachenbehauptung zu klären.
+
 Den wiederkehrenden Windows-Task auf diese 2-aus-3-Kuration umstellen:
 
 ```powershell

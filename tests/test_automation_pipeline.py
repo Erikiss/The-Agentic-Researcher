@@ -175,6 +175,29 @@ def test_formula_without_two_of_three_consensus_needs_review() -> None:
     }
 
 
+def test_expand_can_route_needs_review_topics_to_a_guarded_research_queue() -> None:
+    curated = merge_curation_responses(
+        bundle(),
+        [
+            response("claude", formula="formula-a"),
+            response("codex", formula="formula-b"),
+            response("antigravity", formula="formula-c"),
+        ],
+    )
+
+    assert expand_topics(curated)["tasks"] == []
+    queue = expand_topics(curated, include_needs_review=True)
+
+    assert len(queue["tasks"]) == 4
+    for task in queue["tasks"]:
+        assert task["context"]["curation_status"] == "needs_review"
+        assert task["context"]["critical_disagreements"] == ["formulas"]
+        assert task["context"]["provider_support"]["count"] == 3
+        assert "Resolve the listed disputed fields" in " ".join(
+            task["constraints"]
+        )
+
+
 def test_consensus_rejects_unknown_source_item_ids() -> None:
     responses = [
         response(provider) for provider in ("claude", "codex", "antigravity")

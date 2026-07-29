@@ -1056,6 +1056,7 @@ function Invoke-CurationAndExpansion {
 
     Invoke-PythonModule -Arguments @(
         "-m", "agentic_researcher", "expand", $curatedPath,
+        "--include-needs-review",
         "--output", $queuePath
     ) -WorkingDirectory $script:AgenticRoot `
         -FailureLabel "Research queue expansion"
@@ -1104,6 +1105,7 @@ function Invoke-CurationAndExpansion {
             degraded_consensus_used =
                 [bool]$curated.quality_gate.degraded_consensus_used
             chunk_quorum_met = $true
+            needs_review_included_in_research_queue = $true
             needs_review_count = $needsReviewCount
             research_task_count = @($queue.tasks).Count
             source_item_count = $sourceItemCount
