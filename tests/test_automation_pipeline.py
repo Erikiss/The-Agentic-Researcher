@@ -541,6 +541,28 @@ def test_provider_adapter_supports_prompt_argument_and_wrapper_json(tmp_path: Pa
     assert extract_json_document('```json\n{"ok": true}\n```') == {"ok": True}
 
 
+def test_provider_adapter_uses_utf8_for_mathematical_prompts(tmp_path: Path) -> None:
+    script = tmp_path / "unicode_provider.py"
+    script.write_text(
+        "import json, sys\n"
+        "prompt = sys.stdin.buffer.read().decode('utf-8')\n"
+        "print(json.dumps({'status': 'success', 'summary': prompt, "
+        "'artifacts': [], 'verification': {}}))\n",
+        encoding="utf-8",
+    )
+    prompt = "Kettenregel: ∫ α ↦ β und 𝔼[X]"
+
+    run = invoke_provider(
+        "opencode",
+        prompt,
+        tmp_path / "workspace",
+        command_override=[sys.executable, str(script)],
+    )
+
+    assert run.status == "success"
+    assert run.parsed["summary"] == prompt
+
+
 def test_curator_prompt_never_leaks_private_bundle_and_uses_staged_media(
     tmp_path: Path,
 ) -> None:
