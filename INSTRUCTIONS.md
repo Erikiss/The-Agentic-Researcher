@@ -15,6 +15,12 @@ Project Instructions at the end of this document.
 - **LaTeX**: read/edit only -- never compile. Syntax check: `TERM=dumb chktex report.tex`
 - **Tools**: git, gh, jq, rg, yq, python3, uv, curl, wget
 - **Papers**: fetch from `https://arxiv.org/abs/XXXX.XXXXX` or `https://arxiv.org/html/XXXX.XXXXX`
+- **Erdős Problems**: use `https://www.erdosproblems.com/` for human-readable
+  problem pages and `https://github.com/teorth/erdosproblems` -- especially
+  `data/problems.yaml` -- for reproducible structured metadata. Verify the
+  current status and original references. Treat open problems as research
+  context or outlook only; use only proved, disproved, or otherwise solved
+  entries as worked learning material.
 
 ### Accessible directories
 | Path | Access | Contents |

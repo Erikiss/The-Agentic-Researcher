@@ -141,7 +141,12 @@ fallback must be requested explicitly and reviewed manually.
   --work-root research-runs --state batch_state.json --provider opencode
 ```
 
-See the [Discord mathematics pipeline guide](docs/discord_math_pipeline.md) for the data contract, privacy boundary, evidence policy, provider overrides, resumability, and the [Google Colab open-weight runner](notebooks/open_weight_bulk_research.ipynb).
+Start with the concise
+[Discord mathematics quickstart](QUICKSTART_DISCORD_MATH.md). The
+[full pipeline guide](docs/discord_math_pipeline.md) covers the data contract,
+privacy boundary, evidence policy, provider overrides, and resumability; the
+[Google Colab open-weight runner](notebooks/open_weight_bulk_research.ipynb)
+provides the A100 path.
 
 ## Architecture
 
