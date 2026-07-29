@@ -96,13 +96,16 @@ tar -xzf discord-math-export.tar.gz
 Für den normalen täglichen Betrieb ist die manuelle Variante oben nicht
 erforderlich. Die lokale Automatik:
 
-1. wählt den neuesten erfolgreichen `Daily Math Crawl` mit einem noch
-   verfügbaren verschlüsselten Artefakt,
+1. wählt den ältesten noch nicht bis zur angeforderten Stufe abgeschlossenen
+   `Daily Math Crawl` mit einem verfügbaren verschlüsselten Artefakt,
 2. lädt genau dieses Artefakt in einen geschützten lokalen Arbeitsordner,
 3. entschlüsselt es als Stream mit der lokalen Identity-Datei,
 4. lehnt unsichere Archivpfade, Links und übergroße Archive ab,
 5. prüft Bundle, Medien und den Übergabevertrag und
 6. markiert den GitHub-Run erst danach als lokal übernommen.
+
+Ein teilweise verarbeiteter älterer Export wird damit fortgesetzt, bevor ein
+neueres tägliches Artefakt beginnt.
 
 Voraussetzungen sind eine angemeldete GitHub CLI (`gh`), `age`, Python und die
 bereits erzeugte Identity-Datei:
@@ -122,8 +125,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
   .\automation\Install-DiscordMathScheduledTask.ps1
 ```
 
-Der Task `Discord Math Research - Daily Import` läuft standardmäßig täglich um
-06:30 Uhr lokaler Zeit. Er läuft mit eingeschränkten Rechten unter deinem
+Der Task `Discord Math Research - Daily Import` prüft standardmäßig stündlich,
+beginnend um 06:30 Uhr lokaler Zeit, auf einen neuen erfolgreichen
+Export. Dadurch wird auch ein von GitHub verspätet gestarteter Workflow noch am
+selben Tag übernommen. Der Task läuft mit eingeschränkten Rechten unter deinem
 angemeldeten Windows-Konto, speichert kein Passwort und holt einen verpassten
 Start nach der nächsten Anmeldung nach. Die Daten liegen außerhalb des
 Git-Repositories unter:
@@ -140,9 +145,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
   .\automation\Invoke-DiscordMathImport.ps1
 ```
 
-Der tägliche Standard endet bewusst nach sicherer Übergabe und Validierung.
-Commercial Curation ist wegen möglicher Kosten und erforderlicher CLI-Logins
-nur explizit aktivierbar:
+Der Standard endet bewusst nach sicherer Übergabe und Validierung. Commercial
+Curation ist wegen möglicher Kosten und erforderlicher CLI-Logins nur explizit
+aktivierbar:
 
 ```powershell
 .\automation\Invoke-DiscordMathImport.ps1 `
@@ -150,11 +155,52 @@ nur explizit aktivierbar:
   -AllowCommercialCuration
 ```
 
+Im automatisierten Kurationsmodus werden Claude Code, Codex und Antigravity
+unabhängig aufgerufen. Zwei gültige Antworten je Chunk bilden das notwendige
+Quorum; der Ausfall genau eines Providers stoppt die Pipeline nicht. Bereits
+validierte Chunk-Antworten werden sofort atomar gespeichert und bei einem
+späteren Versuch wiederverwendet, damit erfolgreiche Commercial-Aufrufe nicht
+erneut bezahlt werden.
+
+Vor der ersten Aktivierung einmal interaktiv anmelden und danach den rein
+lesenden Preflight ausführen:
+
+```powershell
+claude auth login
+codex login status
+python -m agentic_researcher provider-preflight `
+  --provider claude `
+  --provider codex `
+  --minimum 2 `
+  --require-auth
+```
+
+Der geplante Task startet Commercial-Aufrufe nur, wenn Claude Code und Codex
+beide angemeldet sind. Antigravity wird weiterhin als unabhängiger dritter
+Kurator versucht; sein Ausfall ist durch das 2-aus-3-Quorum abgedeckt.
+
+Das überlappende 3-Tage-Crawlfenster verursacht keine wiederholte Curation:
+Bereits erfolgreich verarbeitete Block-Fingerprints werden im geschützten
+lokalen State gespeichert. Ein unveränderter Folgelauf erhält den Status
+`no_work` und ruft keinen Commercial Provider auf. Inhaltlich geänderte Blöcke
+werden dagegen erneut ausgewählt.
+
+Den wiederkehrenden Windows-Task auf diese 2-aus-3-Kuration umstellen:
+
+```powershell
+.\automation\Install-DiscordMathScheduledTask.ps1 `
+  -Stage Curate `
+  -AllowCommercialCuration `
+  -PollEveryHours 1 `
+  -Force
+```
+
 Der komplette Open-Weight-Batch verlangt zusätzlich
 `-AllowOpenWeightBatch`. Für eine tägliche Installation in diesen Modi gelten
-dieselben Bestätigungsschalter am Installer. Wegen des überlappenden
-3-Tage-Crawlfensters sollte eine kostenpflichtige tägliche Curation erst nach
-einer zusätzlichen thematischen Deduplizierung aktiviert werden.
+dieselben Bestätigungsschalter am Installer. Ein unbeaufsichtigter Cloud-Batch
+benötigt zusätzlich einen ausdrücklich eingerichteten Open-Weight-Runner; ein
+klassisches interaktives Colab-Notebook lässt sich nicht zuverlässig headless
+vom Windows-Task starten.
 
 Nur den geplanten Task entfernen; lokale Runs und Schlüssel bleiben erhalten:
 
@@ -191,22 +237,25 @@ python -m agentic_researcher curate \
   --provider antigravity \
   --media-root ../Discord-Mathematics-Early-University/discord_exports/curation_media \
   --items-per-prompt 12 \
-  --max-input-chars 24000 \
+  --max-input-chars 16000 \
   --threshold 2 \
+  --allow-degraded-consensus \
+  --resume \
   --runs-dir private-runs/curation \
   --output private-runs/curated_topics.json
 ```
 
-Der Qualitätsgate verlangt standardmäßig eine gültige Antwort von allen drei
-Systemen. Zwei übereinstimmende Antworten entscheiden den Inhalt; Konflikte bei
-Thema, Quellenblock oder Formel werden als `needs_review` markiert.
-`--allow-degraded-consensus` ist nur für einen bewusst manuell geprüften
-Notlauf gedacht.
+Alle drei Systeme werden versucht; jeder Chunk benötigt mindestens zwei gültige
+Antworten. Zwei übereinstimmende Antworten entscheiden den Inhalt; Konflikte bei
+Thema, Quellenblock oder Formel werden als `needs_review` markiert. Ohne
+`--allow-degraded-consensus` bleibt weiterhin der strengere 3-aus-3-Modus
+verfügbar.
 
 Vor dem nächsten Schritt in `private-runs/curated_topics.json` kontrollieren:
 
-- `quality_gate.all_required_curators_present` ist `true`
-- `quality_gate.all_invoked_chunks_complete` ist `true`
+- `quality_gate.all_required_curators_attempted` ist `true`
+- `quality_gate.chunk_quorum_met` ist `true`
+- `quality_gate.threshold` ist `2`
 - alle `needs_review`-Themen wurden geklärt
 
 ## 5. Research-Queue erzeugen

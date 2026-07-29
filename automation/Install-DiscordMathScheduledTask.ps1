@@ -5,6 +5,9 @@ param(
 
     [datetime]$DailyAt = [datetime]::Today.AddHours(6).AddMinutes(30),
 
+    [ValidateRange(1, 24)]
+    [int]$PollEveryHours = 1,
+
     [switch]$AllowCommercialCuration,
 
     [switch]$AllowOpenWeightBatch,
@@ -429,7 +432,13 @@ $action = New-ScheduledTaskAction `
     -Execute $powerShellPath `
     -Argument ($actionArguments -join ' ') `
     -WorkingDirectory $repositoryRoot
-$trigger = New-ScheduledTaskTrigger -Daily -At $DailyAt
+$triggers = @()
+$firstTrigger = [datetime]::Today.Add($DailyAt.TimeOfDay)
+for ($offset = 0; $offset -lt 24; $offset += $PollEveryHours) {
+    $triggers += New-ScheduledTaskTrigger `
+        -Daily `
+        -At $firstTrigger.AddHours($offset)
+}
 $principal = New-ScheduledTaskPrincipal `
     -UserId $windowsIdentity.Name `
     -LogonType Interactive `
@@ -449,7 +458,7 @@ $registrationParameters = @{
     TaskName = $TaskName
     TaskPath = $TaskPath
     Action = $action
-    Trigger = $trigger
+    Trigger = $triggers
     Principal = $principal
     Settings = $settings
     Description = (
@@ -468,7 +477,10 @@ if ($RunNow.IsPresent) {
 }
 
 Write-Host "Scheduled task installed: $TaskName"
-Write-Host ("Schedule: daily at {0:HH:mm} local time" -f $DailyAt)
+Write-Host (
+    "Schedule: every {0} hour(s), starting daily at {1:HH:mm} local time" -f
+    $PollEveryHours, $DailyAt
+)
 Write-Host "Stage: $Stage"
 Write-Host "Import script: $importScriptPath"
 Write-Host "Protected local data: $parentRoot"

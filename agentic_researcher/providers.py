@@ -27,14 +27,48 @@ PROVIDER_ALIASES = {
 }
 
 DEFAULT_COMMANDS: dict[str, list[str]] = {
-    "claude": ["claude", "-p", "--output-format", "json"],
-    "codex": ["codex", "exec", "--skip-git-repo-check", "-"],
+    "claude": [
+        "claude",
+        "-p",
+        "--output-format",
+        "json",
+        "--permission-mode",
+        "plan",
+        "--no-session-persistence",
+        "--tools",
+        "Read,Glob,Grep",
+    ],
+    "codex": [
+        "codex",
+        "exec",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "--ephemeral",
+        "-",
+    ],
     # Antigravity installations can override this experimental CLI spelling with
     # AR_PROVIDER_ANTIGRAVITY_COMMAND.
-    "antigravity": ["agy", "-p", "{prompt}"],
+    "antigravity": [
+        "agy",
+        "--print",
+        "{prompt}",
+        "--output-format",
+        "json",
+        "--print-timeout",
+        "30m",
+        "--sandbox",
+        "--mode",
+        "plan",
+    ],
     # OpenCode can point at a local OpenAI-compatible vLLM endpoint through its
     # normal configuration or AR_PROVIDER_OPENCODE_COMMAND.
     "opencode": ["opencode", "run", "{prompt}"],
+}
+
+AUTH_STATUS_COMMANDS: dict[str, list[str]] = {
+    "claude": ["claude", "auth", "status"],
+    "codex": ["codex", "login", "status"],
 }
 
 
@@ -96,6 +130,121 @@ def provider_command(
     if not command:
         raise ProviderError(f"empty command configured for provider {provider}")
     return command
+
+
+def probe_provider(
+    provider: str,
+    override: str | Sequence[str] | None = None,
+    *,
+    timeout_seconds: int = 10,
+    require_auth: bool = False,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Check that a provider executable can be started without sending a prompt."""
+
+    provider = normalize_provider(provider)
+    command = provider_command(provider, override, environ)
+    probe_command = [command[0], "--version"]
+    started = time.monotonic()
+    try:
+        completed = subprocess.run(
+            probe_command,
+            input="",
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+            env=dict(os.environ if environ is None else environ),
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "provider": provider,
+            "ready": False,
+            "spawnable": False,
+            "authenticated": None,
+            "executable": command[0],
+            "exit_code": None,
+            "duration_seconds": round(time.monotonic() - started, 3),
+            "error": f"version probe exceeded {timeout_seconds}s timeout",
+        }
+    except OSError as exc:
+        return {
+            "provider": provider,
+            "ready": False,
+            "spawnable": False,
+            "authenticated": None,
+            "executable": command[0],
+            "exit_code": None,
+            "duration_seconds": round(time.monotonic() - started, 3),
+            "error": str(exc),
+        }
+    result: dict[str, Any] = {
+        "provider": provider,
+        # Reaching the executable is the pre-spend gate. Authentication and
+        # output-contract failures are handled by resumable live invocations.
+        "ready": True,
+        "spawnable": True,
+        "authenticated": None,
+        "executable": command[0],
+        "exit_code": completed.returncode,
+        "duration_seconds": round(time.monotonic() - started, 3),
+        "error": None,
+    }
+    if not require_auth:
+        return result
+
+    auth_command = AUTH_STATUS_COMMANDS.get(provider)
+    if auth_command is None:
+        result.update(
+            {
+                "ready": False,
+                "error": "no non-interactive authentication probe is defined",
+            }
+        )
+        return result
+    # Reuse the executable resolved from the default, environment override, or
+    # explicit command. This supports absolute CLI paths while keeping the
+    # provider-specific, documented auth-status arguments.
+    auth_command = [command[0], *auth_command[1:]]
+    auth_started = time.monotonic()
+    try:
+        auth = subprocess.run(
+            auth_command,
+            input="",
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+            env=dict(os.environ if environ is None else environ),
+        )
+    except subprocess.TimeoutExpired:
+        result.update(
+            {
+                "ready": False,
+                "authenticated": False,
+                "error": f"authentication probe exceeded {timeout_seconds}s timeout",
+            }
+        )
+        return result
+    except OSError as exc:
+        result.update(
+            {
+                "ready": False,
+                "authenticated": False,
+                "error": str(exc),
+            }
+        )
+        return result
+    result.update(
+        {
+            "ready": auth.returncode == 0,
+            "authenticated": auth.returncode == 0,
+            "auth_exit_code": auth.returncode,
+            "auth_duration_seconds": round(time.monotonic() - auth_started, 3),
+            "error": None if auth.returncode == 0 else "provider is not authenticated",
+        }
+    )
+    return result
 
 
 def _expand_command(
@@ -194,6 +343,7 @@ def invoke_provider(
     command_override: str | Sequence[str] | None = None,
     timeout_seconds: int = 1800,
     output_path: Path | None = None,
+    image_paths: Sequence[Path] | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> ProviderRun:
     """Invoke a provider under the normalized stdin/stdout adapter contract."""
@@ -204,6 +354,34 @@ def invoke_provider(
     prompt_path = workspace / f".agentic-researcher-{provider}-prompt.md"
     prompt_path.write_text(prompt, encoding="utf-8")
     command = provider_command(provider, command_override, environ)
+    configured_command = command_override is not None or (
+        environ if environ is not None else os.environ
+    ).get(f"AR_PROVIDER_{provider.upper()}_COMMAND") is not None
+    if provider == "codex" and image_paths and not configured_command:
+        relative_images: list[str] = []
+        for image_path in image_paths:
+            candidate = (
+                image_path
+                if image_path.is_absolute()
+                else workspace / image_path
+            ).resolve()
+            if not candidate.is_relative_to(workspace) or not candidate.is_file():
+                raise ProviderError(
+                    "Codex image attachments must be regular files inside the "
+                    "provider workspace"
+                )
+            relative_images.append(str(candidate.relative_to(workspace)))
+        image_arguments = [
+            argument
+            for relative_image in relative_images
+            for argument in ("--image", relative_image)
+        ]
+        insertion_index = len(command) - 1 if command[-1] == "-" else len(command)
+        command = (
+            command[:insertion_index]
+            + image_arguments
+            + command[insertion_index:]
+        )
     expanded, consumes_prompt, uses_output_file = _expand_command(
         command, prompt, prompt_path, workspace, output_path
     )

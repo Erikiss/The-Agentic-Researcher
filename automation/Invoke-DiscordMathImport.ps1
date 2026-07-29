@@ -433,7 +433,47 @@ function Get-RunArtifacts {
     return @($allArtifacts)
 }
 
-function Find-LatestArtifact {
+function Test-LocalStageCompleted {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$GitHubRunId,
+        [Parameter(Mandatory = $true)]
+        [string]$ArtifactId
+    )
+
+    $runKey = "run-{0}-artifact-{1}" -f $GitHubRunId, $ArtifactId
+    $runRoot = Join-Path $script:RunsRoot $runKey
+    $receiptPath = switch ($Stage) {
+        "Handoff" { Join-Path $runRoot "handoff.receipt.json" }
+        "Curate" { Join-Path $runRoot "curation.receipt.json" }
+        "Full" { Join-Path $runRoot "batch.receipt.json" }
+    }
+    if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
+        return $false
+    }
+    try {
+        $receipt = Read-JsonFile -Path $receiptPath
+        switch ($Stage) {
+            "Handoff" { return [string]$receipt.handoff_status -ceq "ok" }
+            "Curate" {
+                $curationStatus = [string]$receipt.status
+                return (
+                    $curationStatus -ceq "ok" -or
+                    $curationStatus -ceq "no_work"
+                )
+            }
+            "Full" { return [string]$receipt.status -ceq "complete" }
+        }
+    }
+    catch {
+        # A malformed or incomplete receipt must be selected for normal
+        # validation instead of silently starving the run forever.
+        return $false
+    }
+    return $false
+}
+
+function Find-NextArtifact {
     $json = Invoke-CapturedCommand -Executable $script:GhPath `
         -Arguments @(
             "run", "list",
@@ -451,10 +491,13 @@ function Find-LatestArtifact {
     # runs instead of trying to sort an object without `createdAt`.
     $parsedRuns = $json | ConvertFrom-Json
     $runs = @($parsedRuns)
+    # Process the oldest unfinished export first. This keeps a partial curation
+    # or research batch from being starved by a newer daily snapshot.
     $orderedRuns = @($runs | Sort-Object {
             [DateTimeOffset]::Parse([string]$_.createdAt)
-        } -Descending)
+        })
 
+    $latestCompleted = $null
     foreach ($run in $orderedRuns) {
         $artifacts = @(Get-RunArtifacts -GitHubRunId ([long]$run.databaseId))
         $matching = @(
@@ -473,7 +516,7 @@ function Find-LatestArtifact {
             if ($null -ne $matching[0].PSObject.Properties["digest"]) {
                 $artifactDigest = [string]$matching[0].digest
             }
-            return [PSCustomObject]@{
+            $candidate = [PSCustomObject]@{
                 RunId = [string]$run.databaseId
                 Attempt = [int]$run.attempt
                 RunCreatedAt = [string]$run.createdAt
@@ -486,7 +529,16 @@ function Find-LatestArtifact {
                 ArtifactCreatedAt = [string]$matching[0].created_at
                 ArtifactExpiresAt = [string]$matching[0].expires_at
             }
+            if (-not (Test-LocalStageCompleted `
+                    -GitHubRunId $candidate.RunId `
+                    -ArtifactId $candidate.ArtifactId)) {
+                return $candidate
+            }
+            $latestCompleted = $candidate
         }
+    }
+    if ($null -ne $latestCompleted) {
+        return $latestCompleted
     }
     throw "No successful $Workflow run on $Branch has a non-expired artifact matching $script:ArtifactNamePattern."
 }
@@ -696,6 +748,38 @@ function Assert-HandoffReceiptContent {
     }
 }
 
+function Commit-CurationSeenState {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DeltaPath,
+        [Parameter(Mandatory = $true)]
+        [string]$SeenPath,
+        [Parameter(Mandatory = $true)]
+        [object[]]$SelectedFingerprints
+    )
+
+    Invoke-PythonModule -Arguments @(
+        "-m", "agentic_researcher", "commit-curation-delta",
+        $DeltaPath,
+        "--seen", $SeenPath
+    ) -WorkingDirectory $script:AgenticRoot `
+        -FailureLabel "Curation seen-state commit"
+    $seenState = Read-JsonFile -Path $SeenPath
+    if ($null -eq $seenState.PSObject.Properties["schema_version"] -or
+        [string]$seenState.schema_version -cne
+        "agentic-researcher/curation-seen/v1" -or
+        $null -eq $seenState.PSObject.Properties["fingerprints"]) {
+        throw "Committed curation seen-state is invalid."
+    }
+    $seenFingerprints = @($seenState.fingerprints)
+    foreach ($fingerprint in $SelectedFingerprints) {
+        if ($seenFingerprints -cnotcontains [string]$fingerprint) {
+            throw "Committed curation seen-state is missing a selected fingerprint."
+        }
+    }
+    return $seenState
+}
+
 function Invoke-CurationAndExpansion {
     param(
         [Parameter(Mandatory = $true)]
@@ -710,16 +794,131 @@ function Invoke-CurationAndExpansion {
         throw "Stage '$Stage' requires the explicit -AllowCommercialCuration switch."
     }
 
+    $curationInputPath = Join-Path $RunRoot "curation_input.json"
+    $deltaReportPath = Join-Path $RunRoot "curation_delta_report.json"
+    $seenPath = Join-Path $script:StateRoot "curation-seen.json"
     $curatedPath = Join-Path $RunRoot "curated_topics.json"
     $queuePath = Join-Path $RunRoot "research_queue.json"
     $curationRuns = Join-Path $RunRoot "curation"
     $receiptPath = Join-Path $RunRoot "curation.receipt.json"
 
+    $curationInputExists = Test-Path -LiteralPath $curationInputPath -PathType Leaf
+    $deltaReportExists = Test-Path -LiteralPath $deltaReportPath -PathType Leaf
+    if ($curationInputExists -xor $deltaReportExists) {
+        throw (
+            "Curation delta preparation is incomplete: curation_input.json and " +
+            "curation_delta_report.json must either both exist or both be absent."
+        )
+    }
+    if (-not $curationInputExists) {
+        Write-ImportLog (
+            "Selecting discussion blocks not yet committed in the global " +
+            "curation seen-state."
+        )
+        Invoke-PythonModule -Arguments @(
+            "-m", "agentic_researcher", "prepare-curation-delta",
+            $Handoff.Bundle,
+            "--seen", $seenPath,
+            "--output", $curationInputPath,
+            "--report", $deltaReportPath
+        ) -WorkingDirectory $script:AgenticRoot `
+            -FailureLabel "Curation delta preparation"
+    }
+
+    $sourceBundle = Read-JsonFile -Path $Handoff.Bundle
+    $curationInput = Read-JsonFile -Path $curationInputPath
+    $deltaReport = Read-JsonFile -Path $deltaReportPath
+    if ($null -eq $sourceBundle.PSObject.Properties["items"] -or
+        $null -eq $curationInput.PSObject.Properties["items"]) {
+        throw "Curation delta validation requires source and delta item arrays."
+    }
+    if ($null -eq $curationInput.PSObject.Properties["bundle_id"] -or
+        [string]$curationInput.bundle_id -cne $Handoff.BundleId -or
+        $null -eq $deltaReport.PSObject.Properties["bundle_id"] -or
+        [string]$deltaReport.bundle_id -cne $Handoff.BundleId) {
+        throw "Curation delta files do not refer to the validated handoff bundle."
+    }
+    if ($null -eq $deltaReport.PSObject.Properties["schema_version"] -or
+        [string]$deltaReport.schema_version -cne
+        "agentic-researcher/curation-delta-report/v1") {
+        throw "Curation delta report uses an unsupported schema_version."
+    }
+    foreach ($requiredProperty in @(
+            "status",
+            "source_item_count",
+            "selected_item_count",
+            "already_seen_item_count",
+            "selected_fingerprints"
+        )) {
+        if ($null -eq $deltaReport.PSObject.Properties[$requiredProperty]) {
+            throw "Curation delta report is missing '$requiredProperty'."
+        }
+    }
+    $sourceItemCount = @($sourceBundle.items).Count
+    $selectedItemCount = @($curationInput.items).Count
+    $reportedSourceItemCount = [int]$deltaReport.source_item_count
+    $reportedSelectedItemCount = [int]$deltaReport.selected_item_count
+    $alreadySeenItemCount = [int]$deltaReport.already_seen_item_count
+    $selectedFingerprints = @($deltaReport.selected_fingerprints)
+    if ($reportedSourceItemCount -ne $sourceItemCount -or
+        $reportedSelectedItemCount -ne $selectedItemCount -or
+        $selectedFingerprints.Count -ne $selectedItemCount -or
+        $alreadySeenItemCount -ne ($sourceItemCount - $selectedItemCount)) {
+        throw "Curation delta report counts do not match its source and delta files."
+    }
+    foreach ($fingerprint in $selectedFingerprints) {
+        if ([string]$fingerprint -cnotmatch "^[0-9a-f]{64}$") {
+            throw "Curation delta report contains an invalid fingerprint."
+        }
+    }
+    $deltaStatus = [string]$deltaReport.status
+    if (($selectedItemCount -eq 0 -and $deltaStatus -cne "no_work") -or
+        ($selectedItemCount -gt 0 -and $deltaStatus -cne "ready")) {
+        throw "Curation delta status does not match its selected item count."
+    }
+    $curationInputHash = (
+        Get-FileHash -LiteralPath $curationInputPath -Algorithm SHA256
+    ).Hash.ToLowerInvariant()
+    $deltaReportHash = (
+        Get-FileHash -LiteralPath $deltaReportPath -Algorithm SHA256
+    ).Hash.ToLowerInvariant()
+
     if (Test-Path -LiteralPath $receiptPath -PathType Leaf) {
         $receipt = Read-JsonFile -Path $receiptPath
-        if ([string]$receipt.artifact_sha256 -cne $ArtifactHash -or
-            [string]$receipt.status -cne "ok") {
+        if ([string]$receipt.artifact_sha256 -cne $ArtifactHash) {
             throw "Existing curation receipt does not match this artifact."
+        }
+        foreach ($requiredProperty in @(
+                "curation_input_sha256",
+                "curation_delta_report_sha256"
+            )) {
+            if ($null -eq $receipt.PSObject.Properties[$requiredProperty]) {
+                throw (
+                    "Existing curation receipt predates persistent delta " +
+                    "tracking and cannot be resumed automatically."
+                )
+            }
+        }
+        if ([string]$receipt.curation_input_sha256 -cne $curationInputHash -or
+            [string]$receipt.curation_delta_report_sha256 -cne
+            $deltaReportHash) {
+            throw "Existing curation delta files no longer match their receipt."
+        }
+        if ([string]$receipt.status -ceq "no_work") {
+            if ($deltaStatus -cne "no_work" -or $selectedItemCount -ne 0) {
+                throw "No-work curation receipt conflicts with its delta report."
+            }
+            Write-ImportLog "Curation delta contains no new discussion blocks; skipping."
+            return [PSCustomObject]@{
+                Status = "no_work"
+                QueuePath = $null
+                CurationInputPath = $curationInputPath
+                DeltaReportPath = $deltaReportPath
+                ReceiptPath = $receiptPath
+            }
+        }
+        if ([string]$receipt.status -cne "ok" -or $deltaStatus -cne "ready") {
+            throw "Existing curation receipt does not record a completed ready delta."
         }
         if (-not (Test-Path -LiteralPath $curatedPath -PathType Leaf) -or
             -not (Test-Path -LiteralPath $queuePath -PathType Leaf)) {
@@ -735,25 +934,92 @@ function Invoke-CurationAndExpansion {
             [string]$receipt.research_queue_sha256 -cne $queueHash) {
             throw "Existing curation outputs no longer match their success receipt."
         }
+        # Rebuild an accidentally deleted seen-state from the immutable,
+        # receipt-bound delta before processing a newer overlapping export.
+        [void](Commit-CurationSeenState `
+                -DeltaPath $curationInputPath `
+                -SeenPath $seenPath `
+                -SelectedFingerprints $selectedFingerprints)
         Write-ImportLog "Commercial curation and expansion already completed; skipping."
-        return $queuePath
+        return [PSCustomObject]@{
+            Status = "ok"
+            QueuePath = $queuePath
+            CurationInputPath = $curationInputPath
+            DeltaReportPath = $deltaReportPath
+            ReceiptPath = $receiptPath
+        }
     }
 
-    if ((Test-Path -LiteralPath $curatedPath) -or
-        (Test-Path -LiteralPath $queuePath) -or
-        (Test-Path -LiteralPath $curationRuns)) {
-        throw "Partial curation output exists without a success receipt. Inspect it manually; automatic retry is disabled to avoid duplicate commercial spend."
+    if ($deltaStatus -ceq "no_work") {
+        if ((Test-Path -LiteralPath $curatedPath) -or
+            (Test-Path -LiteralPath $queuePath) -or
+            (Test-Path -LiteralPath $curationRuns)) {
+            throw "No-work delta conflicts with existing curation output."
+        }
+        Write-JsonAtomic -Path $receiptPath -Value ([ordered]@{
+                schema_version = "discord-math-local-curation-receipt/v3"
+                status = "no_work"
+                artifact_sha256 = $ArtifactHash
+                bundle_id = $Handoff.BundleId
+                curation_input_sha256 = $curationInputHash
+                curation_delta_report_sha256 = $deltaReportHash
+                completed_at = Get-UtcTimestamp
+                mode = "delta"
+                source_item_count = $sourceItemCount
+                selected_item_count = 0
+                already_seen_item_count = $alreadySeenItemCount
+                research_task_count = 0
+            })
+        Write-ImportLog "Curation delta contains no new discussion blocks; commercial providers were not invoked."
+        return [PSCustomObject]@{
+            Status = "no_work"
+            QueuePath = $null
+            CurationInputPath = $curationInputPath
+            DeltaReportPath = $deltaReportPath
+            ReceiptPath = $receiptPath
+        }
+    }
+
+    if (((Test-Path -LiteralPath $curatedPath) -or
+            (Test-Path -LiteralPath $queuePath)) -and
+        -not (Test-Path -LiteralPath $curationRuns -PathType Container)) {
+        throw "Partial curation output exists without resumable provider responses."
+    }
+    if (Test-Path -LiteralPath $curationRuns -PathType Container) {
+        Write-ImportLog (
+            "Resuming commercial curation from validated provider responses; " +
+            "only missing chunk responses will be invoked."
+        )
+    }
+    else {
+        Write-ImportLog (
+            "Checking that Claude Code and Codex are both spawnable and " +
+            "authenticated before starting paid work."
+        )
+        Invoke-PythonModule -Arguments @(
+            "-m", "agentic_researcher", "provider-preflight",
+            "--provider", "claude",
+            "--provider", "codex",
+            "--minimum", "2",
+            "--timeout", "10",
+            "--require-auth"
+        ) -WorkingDirectory $script:AgenticRoot `
+            -FailureLabel "Commercial curator preflight"
     }
 
     $curateArguments = @(
-        "-m", "agentic_researcher", "curate", $Handoff.Bundle,
+        "-m", "agentic_researcher", "curate", $curationInputPath,
         "--provider", "claude",
         "--provider", "codex",
         "--provider", "antigravity",
         "--runs-dir", $curationRuns,
         "--items-per-prompt", "12",
-        "--max-input-chars", "24000",
+        # Antigravity print mode receives the prompt as one Windows argument.
+        # Keep margin below CreateProcess' command-line length limit.
+        "--max-input-chars", "16000",
         "--threshold", "2",
+        "--allow-degraded-consensus",
+        "--resume",
         "--output", $curatedPath
     )
     if (Test-Path -LiteralPath $Handoff.MediaRoot -PathType Container) {
@@ -766,11 +1032,22 @@ function Invoke-CurationAndExpansion {
         -FailureLabel "Commercial curation"
 
     $curated = Read-JsonFile -Path $curatedPath
-    if ($null -eq $curated.quality_gate -or
-        $curated.quality_gate.all_required_curators_present -ne $true -or
-        $curated.quality_gate.all_invoked_chunks_complete -ne $true -or
-        $curated.quality_gate.degraded_consensus_allowed -ne $false) {
-        throw "Curation quality gate did not confirm complete non-degraded 3-provider coverage."
+    if ($null -eq $curated.PSObject.Properties["bundle_id"] -or
+        [string]$curated.bundle_id -cne $Handoff.BundleId) {
+        throw "Curation result does not refer to the prepared delta bundle."
+    }
+    if ($null -eq $curated.PSObject.Properties["quality_gate"] -or
+        $null -eq $curated.quality_gate) {
+        throw "Curation result does not contain a quality gate."
+    }
+    $responseCurators = @($curated.quality_gate.response_curators)
+    if ($curated.quality_gate.all_required_curators_attempted -ne $true -or
+        $curated.quality_gate.chunk_quorum_met -ne $true -or
+        [int]$curated.quality_gate.threshold -ne 2 -or
+        $curated.quality_gate.degraded_consensus_allowed -ne $true -or
+        [int]$curated.consensus.threshold -ne 2 -or
+        $responseCurators.Count -lt 2) {
+        throw "Curation quality gate did not confirm robust 2-of-3 coverage."
     }
     $topics = @($curated.topics)
     $needsReviewCount = @(
@@ -783,8 +1060,13 @@ function Invoke-CurationAndExpansion {
     ) -WorkingDirectory $script:AgenticRoot `
         -FailureLabel "Research queue expansion"
     $queue = Read-JsonFile -Path $queuePath
-    if ($null -eq $queue.tasks) {
+    if ($null -eq $queue.PSObject.Properties["tasks"] -or
+        $null -eq $queue.tasks) {
         throw "Expanded research queue does not contain a tasks array."
+    }
+    if ($null -eq $queue.PSObject.Properties["bundle_id"] -or
+        [string]$queue.bundle_id -cne $Handoff.BundleId) {
+        throw "Expanded research queue does not refer to the prepared delta bundle."
     }
     $curatedHash = (
         Get-FileHash -LiteralPath $curatedPath -Algorithm SHA256
@@ -793,23 +1075,108 @@ function Invoke-CurationAndExpansion {
         Get-FileHash -LiteralPath $queuePath -Algorithm SHA256
     ).Hash.ToLowerInvariant()
 
+    # The global seen-state advances only after both downstream artifacts have
+    # passed their structural and quality-gate checks. The CLI write is atomic,
+    # and repeating it after an interrupted receipt write is idempotent.
+    $seenState = Commit-CurationSeenState `
+        -DeltaPath $curationInputPath `
+        -SeenPath $seenPath `
+        -SelectedFingerprints $selectedFingerprints
+    $seenFingerprints = @($seenState.fingerprints)
+
     Write-JsonAtomic -Path $receiptPath -Value ([ordered]@{
-            schema_version = "discord-math-local-curation-receipt/v1"
+            schema_version = "discord-math-local-curation-receipt/v3"
             status = "ok"
             artifact_sha256 = $ArtifactHash
+            bundle_id = $Handoff.BundleId
+            curation_input_sha256 = $curationInputHash
+            curation_delta_report_sha256 = $deltaReportHash
             curated_topics_sha256 = $curatedHash
             research_queue_sha256 = $queueHash
             completed_at = Get-UtcTimestamp
+            mode = "two-of-three"
+            consensus_threshold = 2
             required_curators = @("antigravity", "claude", "codex")
-            degraded_consensus_allowed = $false
+            attempted_curators = @($curated.quality_gate.attempted_curators)
+            response_curators = $responseCurators
+            complete_curators = @($curated.quality_gate.complete_curators)
+            degraded_consensus_allowed = $true
+            degraded_consensus_used =
+                [bool]$curated.quality_gate.degraded_consensus_used
+            chunk_quorum_met = $true
             needs_review_count = $needsReviewCount
             research_task_count = @($queue.tasks).Count
+            source_item_count = $sourceItemCount
+            selected_item_count = $selectedItemCount
+            already_seen_item_count = $alreadySeenItemCount
+            seen_fingerprint_count = $seenFingerprints.Count
+        })
+    $curationSummary = (
+        "2-of-3 curation complete with {0}: {1} accepted queue tasks; " +
+        "{2} topic(s) remain needs_review."
+    ) -f (
+        $responseCurators -join ", "
+    ), @($queue.tasks).Count, $needsReviewCount
+    Write-ImportLog (
+        $curationSummary
+    )
+    return [PSCustomObject]@{
+        Status = "ok"
+        QueuePath = $queuePath
+        CurationInputPath = $curationInputPath
+        DeltaReportPath = $deltaReportPath
+        ReceiptPath = $receiptPath
+    }
+}
+
+function Complete-NoWorkBatch {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RunRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$ArtifactHash,
+        [Parameter(Mandatory = $true)]
+        [object]$CurationResult
+    )
+
+    if ([string]$CurationResult.Status -cne "no_work") {
+        throw "A no-work batch receipt requires a no-work curation result."
+    }
+    $curationReceiptHash = (
+        Get-FileHash -LiteralPath $CurationResult.ReceiptPath -Algorithm SHA256
+    ).Hash.ToLowerInvariant()
+    $receiptPath = Join-Path $RunRoot "batch.receipt.json"
+    if (Test-Path -LiteralPath $receiptPath -PathType Leaf) {
+        $receipt = Read-JsonFile -Path $receiptPath
+        if ([string]$receipt.status -cne "complete" -or
+            [string]$receipt.outcome -cne "no_work" -or
+            [string]$receipt.artifact_sha256 -cne $ArtifactHash -or
+            [string]$receipt.curation_receipt_sha256 -cne
+            $curationReceiptHash) {
+            throw "Existing no-work batch receipt does not match this curation result."
+        }
+        Write-ImportLog "No-work batch already completed; skipping."
+        return
+    }
+    Write-JsonAtomic -Path $receiptPath -Value ([ordered]@{
+            schema_version = "discord-math-local-batch-receipt/v1"
+            status = "complete"
+            outcome = "no_work"
+            artifact_sha256 = $ArtifactHash
+            curation_receipt_sha256 = $curationReceiptHash
+            completed_at = Get-UtcTimestamp
+            provider = $null
+            summary = [ordered]@{
+                success = 0
+                no_work = 1
+            }
+            non_success = [ordered]@{}
+            research_task_count = 0
         })
     Write-ImportLog (
-        "Curation complete: {0} accepted queue tasks; {1} topic(s) remain needs_review." -f
-        @($queue.tasks).Count, $needsReviewCount
+        "Full stage completed with no new discussion blocks; the open-weight " +
+        "provider was not invoked."
     )
-    return $queuePath
 }
 
 function Invoke-OpenWeightBatch {
@@ -1087,8 +1454,11 @@ try {
         Write-ImportLog "Using explicitly supplied offline encrypted artifact."
     }
     else {
-        Write-ImportLog "Selecting the newest successful workflow run with an eligible artifact."
-        $source = Find-LatestArtifact
+        Write-ImportLog (
+            "Selecting the oldest unfinished successful workflow run with an " +
+            "eligible artifact."
+        )
+        $source = Find-NextArtifact
         $source | Add-Member -NotePropertyName Mode -NotePropertyValue "github"
         Write-ImportLog (
             "Selected GitHub run {0}, artifact {1}." -f
@@ -1165,14 +1535,28 @@ try {
     $completedStage = "Handoff"
     $queuePath = $null
     $batchStatePath = $null
+    $curationStatus = $null
+    $batchStatus = $null
+    $curationResult = $null
     if ($Stage -eq "Curate" -or $Stage -eq "Full") {
-        $queuePath = Invoke-CurationAndExpansion -RunRoot $runRoot `
+        $curationResult = Invoke-CurationAndExpansion -RunRoot $runRoot `
             -Handoff $handoff -ArtifactHash $artifactHash
+        $curationStatus = [string]$curationResult.Status
+        $queuePath = $curationResult.QueuePath
         $completedStage = "Curate"
     }
     if ($Stage -eq "Full") {
-        $batchStatePath = Invoke-OpenWeightBatch -RunRoot $runRoot `
-            -QueuePath $queuePath -ArtifactHash $artifactHash
+        if ($curationStatus -ceq "no_work") {
+            Complete-NoWorkBatch -RunRoot $runRoot `
+                -ArtifactHash $artifactHash `
+                -CurationResult $curationResult
+            $batchStatus = "no_work"
+        }
+        else {
+            $batchStatePath = Invoke-OpenWeightBatch -RunRoot $runRoot `
+                -QueuePath $queuePath -ArtifactHash $artifactHash
+            $batchStatus = "complete"
+        }
         $completedStage = "Full"
     }
 
@@ -1193,6 +1577,8 @@ try {
         bundle = $handoff.Bundle
         research_queue = $queuePath
         batch_state = $batchStatePath
+        curation_status = $curationStatus
+        batch_status = $batchStatus
     }
     Write-JsonAtomic -Path (Join-Path $script:StateRoot "latest.json") -Value $latest
     Write-ImportLog "Discord Math import completed at stage '$completedStage'."

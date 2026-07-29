@@ -17,7 +17,7 @@ USER=${USER:-$(whoami)}
 # container launcher. They orchestrate provider CLIs and local/open-weight batch
 # jobs while preserving the launcher's historical option parsing.
 case "${1:-}" in
-    init-project|--init-project|curate|expand|run-batch|provider-contract)
+    init-project|--init-project|curate|expand|run-batch|provider-contract|provider-preflight|prepare-curation-delta|commit-curation-delta)
         if command -v python3 >/dev/null 2>&1; then
             export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
             exec python3 -m agentic_researcher "$@"
@@ -309,6 +309,9 @@ Usage:
   agentic-researcher curate BUNDLE --response PROVIDER=FILE... --output FILE
   agentic-researcher expand CURATED --output QUEUE
   agentic-researcher run-batch QUEUE --work-root DIR --state FILE
+  agentic-researcher provider-preflight --provider NAME... --minimum 2
+  agentic-researcher prepare-curation-delta BUNDLE --seen FILE --output FILE --report FILE
+  agentic-researcher commit-curation-delta DELTA --seen FILE
 
 Options:
   --setup             Run the optional interactive setup wizard
@@ -349,6 +352,8 @@ Examples:
   agentic-researcher --multi-node                 # Multi-node dispatch (Slurm)
   agentic-researcher --multi-node --test          # Validate multi-node setup
   agentic-researcher provider-contract             # Print provider adapter I/O
+  agentic-researcher provider-preflight --provider claude --provider codex --minimum 2
+  agentic-researcher prepare-curation-delta bundle.json --seen seen.json --output delta.json --report report.json
 
 What's Sandboxed:
   The agent can ONLY access your project directory.
