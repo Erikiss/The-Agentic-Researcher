@@ -52,7 +52,10 @@ def _named_values(values: Sequence[str], label: str) -> dict[str, str]:
 
 
 def _print_json(value: Any) -> None:
-    print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+    # Machine-readable stdout must remain safe under Windows PowerShell 5.1,
+    # whose redirected native-command stream commonly uses a legacy code page.
+    # Artifact files still use UTF-8 through atomic_write_json.
+    print(json.dumps(value, ensure_ascii=True, indent=2, sort_keys=True))
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agentic_researcher.cli import main
+from agentic_researcher.cli import _print_json, main
 from agentic_researcher.pipeline import (
     CURATED_TOPICS_SCHEMA,
     CURATION_RESPONSE_SCHEMA,
@@ -132,6 +132,16 @@ def provider_run(provider: str, parsed: dict | None) -> ProviderRun:
         stderr="" if parsed is not None else "simulated failure",
         parsed=parsed,
         error=None if parsed is not None else "simulated failure",
+    )
+
+
+def test_machine_readable_stdout_escapes_non_ascii_for_windows_code_pages(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _print_json({"formula": "α → β"})
+
+    assert capsys.readouterr().out == (
+        '{\n  "formula": "\\u03b1 \\u2192 \\u03b2"\n}\n'
     )
 
 
